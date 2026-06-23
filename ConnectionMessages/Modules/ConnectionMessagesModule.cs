@@ -2,10 +2,9 @@ using System;
 using System.Threading;
 using ConnectionMessages.Configuration;
 using ConnectionMessages.Shared;
+using Sharp.Extensions.GameEventManager;
 using Sharp.Shared.Enums;
 using Sharp.Shared.HookParams;
-using Sharp.Shared.Listeners;
-using Sharp.Shared.Managers;
 using Sharp.Shared.Objects;
 using Sharp.Shared.Types;
 using Sharp.Shared.Units;
@@ -14,7 +13,7 @@ using Microsoft.Extensions.Logging;
 namespace ConnectionMessages.Modules;
 
 internal sealed class ConnectionMessagesModule
-    : IModule, IClientListener, IConnectionMessagesShared
+    : IModule, IConnectionMessagesShared
 {
     // Per-slot flags — slot = PlayerSlot byte (0–63)
     private readonly bool[] _silent            = new bool[64];
@@ -24,21 +23,21 @@ internal sealed class ConnectionMessagesModule
     private readonly InterfaceBridge                   _bridge;
     private readonly ILogger<ConnectionMessagesModule> _logger;
     private readonly IConnectionMessagesConfig         _config;
+    private readonly IGameEventManager                 _gameEventManager;
 
     // TextMsg hook delegate kept alive
     private Func<ITextMsgHookParams, HookReturnValue<NetworkReceiver>, HookReturnValue<NetworkReceiver>>? _textMsgHook;
 
-    int IClientListener.ListenerVersion  => IClientListener.ApiVersion;
-    int IClientListener.ListenerPriority => 0;
-
     public ConnectionMessagesModule(
         InterfaceBridge                   bridge,
         ILogger<ConnectionMessagesModule> logger,
-        IConnectionMessagesConfig         config)
+        IConnectionMessagesConfig         config,
+        IGameEventManager                 gameEventManager)
     {
-        _bridge = bridge;
-        _logger = logger;
-        _config = config;
+        _bridge           = bridge;
+        _logger           = logger;
+        _config           = config;
+        _gameEventManager = gameEventManager;
     }
 
     // ===== IConnectionMessagesShared =====
@@ -68,7 +67,11 @@ internal sealed class ConnectionMessagesModule
 
     public bool Init()
     {
-        _bridge.ClientManager.InstallClientListener(this);
+        // Trigger join/leave from game events instead of IClientListener.
+        // player_connect_full fires when the player is fully in-game (correct "joined" moment).
+        // player_disconnect carries the disconnect reason/name.
+        _gameEventManager.ListenEvent("player_connect_full", OnPlayerConnectFull);
+        _gameEventManager.ListenEvent("player_disconnect",   OnPlayerDisconnect);
 
         if (_config.SuppressEngine)
         {
@@ -91,8 +94,6 @@ internal sealed class ConnectionMessagesModule
 
     public void Shutdown()
     {
-        _bridge.ClientManager.RemoveClientListener(this);
-
         if (_textMsgHook is not null)
         {
             _bridge.HookManager.TextMsg.RemoveHookPre(_textMsgHook);
@@ -121,11 +122,16 @@ internal sealed class ConnectionMessagesModule
         return ret;
     }
 
-    // ===== IClientListener =====
+    // ===== Game event listeners — join / leave triggers =====
 
-    void IClientListener.OnClientPutInServer(IGameClient client)
+    private void OnPlayerConnectFull(IGameEvent e)
     {
-        if (client.IsFakeClient || !_config.Enabled || !_config.ShowJoin)
+        // Resolve client from the event's userid.
+        var client = _bridge.ClientManager.GetGameClient(new UserID((ushort)e.GetInt("userid")));
+        if (client is null || client.IsFakeClient || client.IsHltv)
+            return;
+
+        if (!_config.Enabled || !_config.ShowJoin)
             return;
 
         var slot = (int)(byte)client.Slot;
@@ -141,48 +147,71 @@ internal sealed class ConnectionMessagesModule
         if (Volatile.Read(ref _silent[slot]))
             return;
 
-        var msg = BuildMessage(_config.JoinTemplate, client.Name ?? "Unknown");
+        var msg = BuildMessage(_config.JoinTemplate, client.Name ?? "Unknown", string.Empty);
         _bridge.ModSharp.PrintToChatAll(msg);
     }
 
-    void IClientListener.OnClientDisconnected(IGameClient client, NetworkDisconnectionReason reason)
+    private void OnPlayerDisconnect(IGameEvent e)
     {
-        var slot = (int)(byte)client.Slot;
+        // Controller may already be torn down at disconnect — resolve via userid through ClientManager.
+        var client = _bridge.ClientManager.GetGameClient(new UserID((ushort)e.GetInt("userid")));
 
-        if (!client.IsFakeClient && _config.Enabled && _config.ShowLeave)
+        // Event still carries name/reason even when the client is gone — read them straight off the event.
+        var name   = e.GetString("name");
+        var reason = ((NetworkDisconnectionReason)e.GetInt("reason")).ToString();
+
+        var isFake = client?.IsFakeClient ?? false;
+        var isHltv = client?.IsHltv ?? false;
+        if (string.IsNullOrEmpty(name))
+            name = client?.Name ?? "Unknown";
+
+        if (!isFake && !isHltv && _config.Enabled && _config.ShowLeave)
         {
-            if (Volatile.Read(ref _suppressNextLeave[slot]))
+            // If we couldn't resolve the client we have no slot — fall back to printing
+            // (no per-slot flags to consult/clear in that case).
+            if (client is not null)
             {
-                Volatile.Write(ref _suppressNextLeave[slot], false);
+                var slot = (int)(byte)client.Slot;
+
+                if (Volatile.Read(ref _suppressNextLeave[slot]))
+                {
+                    Volatile.Write(ref _suppressNextLeave[slot], false);
+                }
+                else if (!Volatile.Read(ref _silent[slot]))
+                {
+                    var msg = BuildMessage(_config.LeaveTemplate, name, reason);
+                    _bridge.ModSharp.PrintToChatAll(msg);
+                }
+
+                // Always clear state on disconnect
+                _silent[slot]            = false;
+                _suppressNextJoin[slot]  = false;
+                _suppressNextLeave[slot] = false;
             }
-            else if (!Volatile.Read(ref _silent[slot]))
+            else
             {
-                var msg = BuildMessage(_config.LeaveTemplate, client.Name ?? "Unknown");
+                var msg = BuildMessage(_config.LeaveTemplate, name, reason);
                 _bridge.ModSharp.PrintToChatAll(msg);
             }
         }
-
-        // Always clear state on disconnect
-        _silent[slot]            = false;
-        _suppressNextJoin[slot]  = false;
-        _suppressNextLeave[slot] = false;
+        else if (client is not null)
+        {
+            // Even when not printing, clear per-slot state for the freed slot.
+            var slot = (int)(byte)client.Slot;
+            _silent[slot]            = false;
+            _suppressNextJoin[slot]  = false;
+            _suppressNextLeave[slot] = false;
+        }
     }
-
-    // Remaining IClientListener stubs
-    void IClientListener.OnClientConnected(IGameClient client)                                                    { }
-    void IClientListener.OnClientDisconnecting(IGameClient client, NetworkDisconnectionReason reason)             { }
-    void IClientListener.OnClientPostAdminCheck(IGameClient client)                                               { }
-    bool IClientListener.OnClientPreAdminCheck(IGameClient client)                                                => false;
-    ECommandAction IClientListener.OnClientSayCommand(IGameClient client, bool teamOnly, bool isCmd, string cmdName, string msg) => ECommandAction.Skipped;
-    void IClientListener.OnClientSettingChanged(IGameClient client)                                               { }
-    void IClientListener.OnAdminCacheReload()                                                                     { }
 
     // ===== Helpers =====
 
-    private static string BuildMessage(string template, string playerName)
+    private static string BuildMessage(string template, string playerName, string reason)
     {
-        // Replace {name} BEFORE color processing so braces don't interfere.
-        var raw = template.Replace("{name}", playerName, StringComparison.Ordinal);
+        // Replace placeholders BEFORE color processing so braces don't interfere.
+        var raw = template
+            .Replace("{name}", playerName, StringComparison.Ordinal)
+            .Replace("{reason}", reason, StringComparison.Ordinal);
         return ProcessColorCodes(raw);
     }
 

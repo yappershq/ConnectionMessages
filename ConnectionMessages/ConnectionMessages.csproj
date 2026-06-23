@@ -9,6 +9,8 @@
     <PackageReference Include="Microsoft.Extensions.DependencyInjection"        Version="10.0.7" />
     <PackageReference Include="Microsoft.Extensions.Logging"                    Version="10.0.7" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions"       Version="10.0.7" />
+    <!-- GameEventManager implementation DLL must ship with the plugin — plain reference so the runtime asset flows to output -->
+    <PackageReference Include="ModSharp.Sharp.Extensions.GameEventManager"      Version="$(ModSharpVersion)" />
   </ItemGroup>
 
   <ItemGroup>

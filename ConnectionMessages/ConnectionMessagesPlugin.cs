@@ -2,6 +2,7 @@ using System;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Sharp.Extensions.GameEventManager;
 using Sharp.Shared;
 
 namespace ConnectionMessages;
@@ -39,6 +40,7 @@ public sealed class ConnectionMessagesPlugin : IModSharpModule
         services.AddSingleton(InterfaceBridge.Instance);
         services.AddSingleton<ILoggerFactory>(loggerFactory);
         services.AddSingleton(typeof(ILogger<>), typeof(LoggerFactoryLogger<>));
+        services.AddGameEventManager();   // requires ISharedSystem registered above
         services.AddModules();
 
         _serviceProvider = services.BuildServiceProvider();
