@@ -20,6 +20,13 @@
     <OutputPath>$(MSBuildThisFileDirectory).build\modules\$(MSBuildProjectName)\</OutputPath>
   </PropertyGroup>
 
+  <!-- .Shared projects build into .build/shared/ → deploy to /game/sharp/shared/ so other plugins
+       can load + unify the type cross-ALC (ModSharp PreferSharedTypes). Never ship a .Shared in a
+       module dir. -->
+  <PropertyGroup Condition="$(MSBuildProjectName.EndsWith('.Shared'))">
+    <OutputPath>$(MSBuildThisFileDirectory).build\shared\$(MSBuildProjectName)\</OutputPath>
+  </PropertyGroup>
+
   <ItemGroup>
     <Compile Remove="obj\**" />
     <EmbeddedResource Remove="obj\**" />
