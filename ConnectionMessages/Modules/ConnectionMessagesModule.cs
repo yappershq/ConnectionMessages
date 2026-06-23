@@ -126,9 +126,11 @@ internal sealed class ConnectionMessagesModule
 
     private void OnPlayerConnectFull(IGameEvent e)
     {
-        // Resolve client from the event's userid.
+        // Resolve client from the event's userid. player_connect_full fires when the player is
+        // fully in-game, but gate on IsInGame anyway — never trust a half-valid (loading/limbo)
+        // client. IsConnected is true during loading and yields half-valid clients.
         var client = _bridge.ClientManager.GetGameClient(new UserID((ushort)e.GetInt("userid")));
-        if (client is null || client.IsFakeClient || client.IsHltv)
+        if (client is not { IsInGame: true } || client.IsFakeClient || client.IsHltv)
             return;
 
         if (!_config.Enabled || !_config.ShowJoin)
@@ -183,10 +185,8 @@ internal sealed class ConnectionMessagesModule
                     _bridge.ModSharp.PrintToChatAll(msg);
                 }
 
-                // Always clear state on disconnect
-                _silent[slot]            = false;
-                _suppressNextJoin[slot]  = false;
-                _suppressNextLeave[slot] = false;
+                // Always clear per-slot state on disconnect (freed slot is reused for the next connect).
+                ClearSlot(slot);
             }
             else
             {
@@ -197,11 +197,17 @@ internal sealed class ConnectionMessagesModule
         else if (client is not null)
         {
             // Even when not printing, clear per-slot state for the freed slot.
-            var slot = (int)(byte)client.Slot;
-            _silent[slot]            = false;
-            _suppressNextJoin[slot]  = false;
-            _suppressNextLeave[slot] = false;
+            ClearSlot((int)(byte)client.Slot);
         }
+    }
+
+    // Reset all per-slot flags for a freed slot so reused slots start clean.
+    private void ClearSlot(int slot)
+    {
+        if ((uint)slot >= 64) return;
+        _silent[slot]            = false;
+        _suppressNextJoin[slot]  = false;
+        _suppressNextLeave[slot] = false;
     }
 
     // ===== Helpers =====
