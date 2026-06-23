@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="ConnectionMessages.Shared/ConnectionMessages.Shared.csproj" />
+  <Project Path="ConnectionMessages/ConnectionMessages.csproj" />
+</Solution>
