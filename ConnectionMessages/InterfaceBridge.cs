@@ -1,3 +1,4 @@
+using System;
 using Microsoft.Extensions.Logging;
 using Sharp.Modules.AdminManager.Shared;
 using Sharp.Modules.LocalizerManager.Shared;
@@ -62,7 +63,19 @@ internal sealed class InterfaceBridge
             return;
 
         LocalizerManager = lm;
-        lm.LoadLocaleFile("connectionmessages", suppressDuplicationWarnings: true);
+
+        // Optional locale file. ConnectionMessages ships no connectionmessages.json (messages are
+        // formatted inline, not via ILocale.Text), so LoadLocaleFile would throw FileNotFound and
+        // abort OnAllModulesLoaded. Guard it: a missing locale must never crash plugin load.
+        try
+        {
+            lm.LoadLocaleFile("connectionmessages", suppressDuplicationWarnings: true);
+        }
+        catch (Exception e)
+        {
+            LoggerFactory.CreateLogger<InterfaceBridge>()
+                .LogWarning(e, "[ConnectionMessages] connectionmessages.json locale not found — continuing without localization.");
+        }
     }
 
     internal void InitAdminManager()
